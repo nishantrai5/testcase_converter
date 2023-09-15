@@ -76,6 +76,7 @@ import pandas as pd
 from xml.etree.ElementTree import Element, SubElement, tostring, ElementTree
 from xml.dom import minidom
 import sys
+import os
 
 
 class Converter:
@@ -83,7 +84,10 @@ class Converter:
         self.auto_number_steps = False
 
     def convert_to_xml(self, excel_file_path, sheet_name):
-        # Load the excel file
+        # Setup Column Options Flags
+        add_enternal_id = False
+        add_precondition = False
+
         try:
             df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
         except Exception as e:
@@ -95,9 +99,12 @@ class Converter:
         current_testcase = None
         test_action_count = 0
 
-        # Check is the External ID column is present
+        # Check if the External ID column is present
         if "ExternalID" in df.columns:
             add_enternal_id = True
+        # Check if the Precondition column is present
+        if "Precondition" in df.columns:
+            add_precondition = True
 
         # Iterate over the rows of the excel file
         for _, row in df.iterrows():
@@ -114,7 +121,10 @@ class Converter:
                 summary.text = self._format_text(row["Summary"])
                 # Create the preconditions element
                 preconditions = SubElement(current_testcase, "preconditions")
-                preconditions.text = self._format_text(row["PreCondition"])
+                if add_precondition & pd.notnull(row["PreCondition"]):
+                    preconditions.text = self._format_text(row["PreCondition"])
+                else:
+                    preconditions.text = "<![CDATA[<p></p>]]>"
                 # Create the execution_type element
                 execution_type = SubElement(current_testcase, "execution_type")
                 execution_type.text = "1"
@@ -124,11 +134,7 @@ class Converter:
                     externalid.text = row["ExternalID"]
                 # Create the steps element
                 steps = SubElement(current_testcase, "steps")
-            if (
-                pd.notnull(row["Action"])
-                and pd.notnull(row["ExpectedResults"])
-                and current_testcase is not None
-            ):
+            if pd.notnull(row["Action"]) and pd.notnull(row["ExpectedResults"]) and current_testcase is not None:
                 # Create the step element
                 step = SubElement(steps, "step")
                 # Create the step_number element
@@ -148,83 +154,40 @@ class Converter:
         # Convert the xml to a pretty string
         xmlstr = minidom.parseString(tostring(root)).toprettyxml(indent="   ")
 
+        # Get the Excel File absolute path and the folder path
+        excel_absolute_path = os.path.abspath(excel_file_path)
+        excel_folder_path = os.path.dirname(excel_absolute_path)
+        excel_file_name = excel_absolute_path.split("/")[-1].split(".")[0]
+
+        # Create a new folder for the xml files with the same name as the excel file
+        try:
+            os.mkdir(f"{excel_folder_path}/{excel_file_name}")
+        except FileExistsError:
+            print(f"Folder {excel_file_name} already exists")
+
+        excel_folder_path = f"{excel_folder_path}/{excel_file_name}"
+
         # Write the xml to a file
-        excel_file_name = excel_file_path.split("/")[-1].split(".")[0]
         serial_number = 1
         while True:
             try:
-                with open(
-                    f"{excel_file_name}_{sheet_name}_{serial_number}.xml", "r"
-                ) as f:
+                with open(f"{excel_folder_path}/{excel_file_name}_{sheet_name}_{serial_number}.xml", "r") as f:
                     serial_number += 1
             except FileNotFoundError:
                 break
-        with open(f"{excel_file_name}_{sheet_name}_{serial_number}.xml", "w") as f:
+        with open(f"{excel_folder_path}/{excel_file_name}_{sheet_name}_{serial_number}.xml", "w") as f:
             f.write(xmlstr)
         # Replace all the &lt; and &gt; with < and > in the output file
-        with open(f"{excel_file_name}_{sheet_name}_{serial_number}.xml", "r") as f:
+        with open(f"{excel_folder_path}/{excel_file_name}_{sheet_name}_{serial_number}.xml", "r") as f:
             xml_string = f.read()
         xml_string = xml_string.replace("&lt;", "<")
         xml_string = xml_string.replace("&gt;", ">")
-        with open(f"{excel_file_name}_{sheet_name}_{serial_number}.xml", "w") as f:
+        with open(f"{excel_folder_path}/{excel_file_name}_{sheet_name}_{serial_number}.xml", "w") as f:
             f.write(xml_string)
-        print(f"XML file saved as {excel_file_name}_{sheet_name}_{serial_number}.xml")
+        print(f"XML file saved as {excel_file_name}_{sheet_name}_{serial_number}.xml in folder {excel_file_name}")
 
-    def convert_to_excel(self, xml_file_path):
-        # Load the xml file
-        try:
-            tree = ElementTree()
-            tree.parse(xml_file_path)
-        except Exception as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-
-        # Create the dataframe
-        df = pd.DataFrame(
-            columns=[
-                "UseCase",
-                "ExternalID",
-                "Name",
-                "Summary",
-                "PreCondition",
-                "Action",
-                "ExpectedResults",
-            ]
-        )
-
-        # Iterate over the testcases
-        for testcase in tree.iter("testcase"):
-            # Create a new row
-            row = {}
-            row["UseCase"] = testcase.get("name")
-            row["ExternalID"] = testcase.get("name")
-            row["Name"] = testcase.get("name")
-            row["Summary"] = testcase.find("summary").text
-            row["PreCondition"] = testcase.find("preconditions").text
-            # If not Steps in the XML then move to the next testcase
-            if testcase.find("steps") is None:
-                df = df.append(row, ignore_index=True)
-                continue
-            row["Action"] = ""
-            row["ExpectedResults"] = ""
-            for step in testcase.iter("step"):
-                row["Action"] = step.find("actions").text
-                row["ExpectedResults"] = step.find("expectedresults").text
-                # Append the row to the dataframe
-                df = df.append(row, ignore_index=True)
-
-        # Write the dataframe to an excel file
-        xml_file_name = xml_file_path.split("/")[-1].split(".")[0]
-        serial_number = 1
-        while True:
-            try:
-                with open(f"{xml_file_name}_{serial_number}.xlsx", "r") as f:
-                    serial_number += 1
-            except FileNotFoundError:
-                break
-        df.to_excel(f"{xml_file_name}_{serial_number}.xlsx", index=False)
-
-    def convert_to_markdown(self, excel_file_path, sheet_name):
+    def convert_to_markdown(self, excel_file_path, sheet_name=None, split_testcases=True):
+        # Load the excel file
         # Load the excel file
         try:
             df = pd.read_excel(excel_file_path, sheet_name=sheet_name)
@@ -232,41 +195,72 @@ class Converter:
             print(f"Error: {e}")
             sys.exit(1)
 
+        excel_absolute_path = os.path.abspath(excel_file_path)
+        markdown_folder_path = os.path.dirname(excel_absolute_path)
+        excel_file_name = excel_absolute_path.split("/")[-1].split(".")[0]
+
+        # Create a new folder for the xml files with the same name as the excel file
+        try:
+            os.mkdir(f"{markdown_folder_path}/{excel_file_name}/{sheet_name}")
+        except FileExistsError:
+            print(f"Folder {excel_file_name}/{sheet_name} already exists")
+
+        markdown_folder_path = f"{markdown_folder_path}/{excel_file_name}/{sheet_name}"
+
         # Create the markdown string
         markdown_string = ""
-        current_usecase = None
+        current_testcase = None
 
-        # Iterate over the rows of the excel file
+        # Iterate over the rows of the excel file and split the output into multiple different files per test case
         for index, row in df.iterrows():
-            if pd.notnull(row["UseCase"]):
-                if current_usecase is None or current_usecase != row["UseCase"]:
-                    markdown_string += f"\n# UseCase: {row['UseCase']}\n"
-                    current_usecase = row["UseCase"]
             if pd.notnull(row["Name"]):
-                markdown_string += f"\n## {row['Name']}\n"
+                if split_testcases:
+                    if current_testcase is not None:
+                        serial_number = 1
+                        while True:
+                            try:
+                                with open(f"{markdown_folder_path}/{current_testcase}_{serial_number}.md", "r") as f:
+                                    serial_number += 1
+                            except FileNotFoundError:
+                                break
+                        with open(f"{markdown_folder_path}/{current_testcase}_{serial_number}.md", "w") as f:
+                            f.write(markdown_string)
+                        markdown_string = ""
+                current_testcase = row["Name"]
+                markdown_string += f"\n# {row['Name']}\n"
                 step_counter = 1
             if pd.notnull(row["Summary"]):
                 markdown_string += f"\nSummary : \n\n{row['Summary']}\n"
             if pd.notnull(row["PreCondition"]):
                 markdown_string += f"\nPre Condition : \n\n{row['PreCondition']}\n"
             if pd.notnull(row["Action"]) and pd.notnull(row["ExpectedResults"]):
-                markdown_string += f"\n### Step - {step_counter} | Action: {row['Action']} | Expected Result: {row['ExpectedResults']}\n"
+                markdown_string += f"\n## Step - {step_counter} | Action: {row['Action']} | Expected Result: {row['ExpectedResults']}\n"
                 step_counter += 1
             markdown_string += "\n"
 
         # Write the markdown string to a file
-        excel_file_name = excel_file_path.split("/")[-1].split(".")[0]
-        serial_number = 1
-        while True:
-            try:
-                with open(
-                    f"{excel_file_name}_{sheet_name}_{serial_number}.md", "r"
-                ) as f:
-                    serial_number += 1
-            except FileNotFoundError:
-                break
-        with open(f"{excel_file_name}_{sheet_name}_{serial_number}.md", "w") as f:
-            f.write(markdown_string)
+        if split_testcases:
+            serial_number = 1
+            while True:
+                try:
+                    with open(f"{markdown_folder_path}/{current_testcase}_{serial_number}.md", "r") as f:
+                        serial_number += 1
+                except FileNotFoundError:
+                    break
+            with open(f"{markdown_folder_path}/{current_testcase}_{serial_number}.md", "w") as f:
+                f.write(markdown_string)
+        else:
+            serial_number = 1
+            while True:
+                try:
+                    with open(f"{markdown_folder_path}/{excel_file_name}_{serial_number}.md", "r") as f:
+                        serial_number += 1
+                except FileNotFoundError:
+                    break
+            with open(f"{markdown_folder_path}/{excel_file_name}_{serial_number}.md", "w") as f:
+                f.write(markdown_string)
+
+        print("Log: Markdown file saved successfully")
 
     def _format_text(self, text):
         if pd.notna(text):
@@ -276,21 +270,29 @@ class Converter:
 
 if __name__ == "__main__":
     converter = Converter()
-    if len(sys.argv) == 4:
-        # If user set the flag -m then generate the markdown file
+    if len(sys.argv) == 1:
+        print("Invalid Input Format : Usage: converter.py [-m] <file_path> <sheet_name>")
+    elif len(sys.argv) == 3:
+        excel_file_path = sys.argv[1]
+        sheet_name = sys.argv[2]
+        converter.convert_to_xml(excel_file_path, sheet_name)
+    elif len(sys.argv) == 4:
         if sys.argv[1] == "-m":
+            # Ask User is the if the markdown files should be split into multiple files
+            split_testcases = input("Do you want to split the test cases into multiple files? (y/n) : ")
+            if split_testcases == "y":
+                split_testcases = True
+            elif split_testcases == "n":
+                split_testcases = False
+            else:
+                print("Invalid Input Format : Usage: converter.py [-m] <file_path> <sheet_name>")
+                sys.exit(1)
             excel_file_path = sys.argv[2]
             sheet_name = sys.argv[3]
-            converter.convert_to_markdown(excel_file_path, sheet_name)
-        # If user set the flag -x then generate the xml file
-        elif sys.argv[1] == "-x":
-            excel_file_path = sys.argv[2]
-            sheet_name = sys.argv[3]
-            converter.convert_to_xml(excel_file_path, sheet_name)
-    elif len(sys.argv) == 2:
-        xml_file_path = sys.argv[1]
-        converter.convert_to_excel(xml_file_path)
+            converter.convert_to_markdown(excel_file_path, sheet_name, split_testcases)
+        else:
+            print("Invalid Input Format : Usage: converter.py [-m] <file_path> <sheet_name>")
+            sys.exit(1)
     else:
-        print(
-            "Invalid Input Format : python converter.py -m|x <excel_file_path> <sheet_name> or python converter.py <xml_file_path>"
-        )
+        print("Invalid Input Format : Usage: converter.py [-m] <file_path> <sheet_name>")
+        sys.exit(1)
